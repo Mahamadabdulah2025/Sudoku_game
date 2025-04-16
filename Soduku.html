@@ -1,35 +1,19 @@
+from flask import Flask, request, render_template_string
 import cv2
 import numpy as np
 import pytesseract
 import os
-from flask import Flask, request, render_template_string
-
-# Set Tesseract path if needed (Windows only)
-# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 app = Flask(__name__)
 
-# HTML Templates
-UPLOAD_HTML = '''
-<!DOCTYPE html>
-<html>
-<head><title>Upload Sudoku Image</title></head>
-<body>
-    <h1>Upload a Sudoku Image</h1>
-    <form method="post" enctype="multipart/form-data">
-        <input type="file" name="image" accept="image/*" required>
-        <input type="submit" value="Solve Sudoku">
-    </form>
-</body>
-</html>
-'''
-
-RESULT_HTML = '''
+HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Solved Sudoku</title>
+    <title>Sudoku Solver</title>
     <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1 { color: #333; }
         table { border-collapse: collapse; margin: 20px; border: 3px solid black; }
         td { width: 40px; height: 40px; text-align: center; font-size: 20px; border-right: 1px solid #999; border-bottom: 1px solid #999; }
         tr:nth-child(3n) td { border-bottom: 3px solid black; }
@@ -37,6 +21,13 @@ RESULT_HTML = '''
     </style>
 </head>
 <body>
+    <h1>Upload a Sudoku Image</h1>
+    <form method="post" enctype="multipart/form-data">
+        <input type="file" name="image" accept="image/*" required>
+        <input type="submit" value="Solve Sudoku">
+    </form>
+
+    {% if grid is defined %}
     <h1>Solved Sudoku</h1>
     <table>
         {% for i in range(9) %}
@@ -48,6 +39,7 @@ RESULT_HTML = '''
         {% endfor %}
     </table>
     <a href="/">Upload another image</a>
+    {% endif %}
 </body>
 </html>
 '''
@@ -83,7 +75,7 @@ def process_image(image_path):
     grid = np.zeros((9, 9), dtype=int)
     cell_size = 450 // 9
     for i in range(9):
-        for j in range(9):
+        range(9):
             x, y = j * cell_size, i * cell_size
             cell = warped[y:y+cell_size, x:x+cell_size]
             cell = cv2.resize(cell, (128, 128))
@@ -149,12 +141,12 @@ def index():
             if not np.all(np.isin(grid, list(range(10)))):
                 raise ValueError("Invalid grid data extracted from image")
             if solve_sudoku(grid):
-                return render_template_string(RESULT_HTML, grid=grid)
+                return render_template_string(HTML_TEMPLATE, grid=grid)
             return "Could not solve the Sudoku puzzle", 500
         except Exception as e:
             return f"Error processing image: {str(e)}", 500
     
-    return render_template_string(UPLOAD_HTML)
+    return render_template_string(HTML_TEMPLATE)
 
 if __name__ == '__main__':
     app.run(debug=True)
