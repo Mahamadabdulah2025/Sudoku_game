@@ -1,0 +1,160 @@
+import cv2
+import numpy as np
+import pytesseract
+import os
+from flask import Flask, request, render_template_string
+
+# Set Tesseract path if needed (Windows only)
+# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+app = Flask(__name__)
+
+# HTML Templates
+UPLOAD_HTML = '''
+<!DOCTYPE html>
+<html>
+<head><title>Upload Sudoku Image</title></head>
+<body>
+    <h1>Upload a Sudoku Image</h1>
+    <form method="post" enctype="multipart/form-data">
+        <input type="file" name="image" accept="image/*" required>
+        <input type="submit" value="Solve Sudoku">
+    </form>
+</body>
+</html>
+'''
+
+RESULT_HTML = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Solved Sudoku</title>
+    <style>
+        table { border-collapse: collapse; margin: 20px; border: 3px solid black; }
+        td { width: 40px; height: 40px; text-align: center; font-size: 20px; border-right: 1px solid #999; border-bottom: 1px solid #999; }
+        tr:nth-child(3n) td { border-bottom: 3px solid black; }
+        td:nth-child(3n) { border-right: 3px solid black; }
+    </style>
+</head>
+<body>
+    <h1>Solved Sudoku</h1>
+    <table>
+        {% for i in range(9) %}
+        <tr>
+            {% for j in range(9) %}
+            <td>{{ grid[i][j] if grid[i][j] != 0 else '.' }}</td>
+            {% endfor %}
+        </tr>
+        {% endfor %}
+    </table>
+    <a href="/">Upload another image</a>
+</body>
+</html>
+'''
+
+def process_image(image_path):
+    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    img = cv2.resize(img, (450, 450))
+    img = cv2.GaussianBlur(img, (5, 5), 0)
+    img = cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                cv2.THRESH_BINARY_INV, 11, 2)
+
+    contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    max_contour = max(contours, key=cv2.contourArea, default=None)
+    if max_contour is None or cv2.contourArea(max_contour) < 10000:
+        raise ValueError("Sudoku grid not found")
+
+    peri = cv2.arcLength(max_contour, True)
+    approx = cv2.approxPolyDP(max_contour, 0.02 * peri, True)
+    if len(approx) != 4:
+        raise ValueError("Grid approximation failed")
+
+    pts = approx.reshape(4, 2)
+    rect = np.zeros((4, 2), dtype="float32")
+    s = pts.sum(axis=1)
+    rect[0], rect[2] = pts[np.argmin(s)], pts[np.argmax(s)]
+    diff = np.diff(pts, axis=1)
+    rect[1], rect[3] = pts[np.argmin(diff)], pts[np.argmax(diff)]
+
+    dst = np.array([[0, 0], [449, 0], [449, 449], [0, 449]], dtype="float32")
+    M = cv2.getPerspectiveTransform(rect, dst)
+    warped = cv2.warpPerspective(img, M, (450, 450))
+
+    grid = np.zeros((9, 9), dtype=int)
+    cell_size = 450 // 9
+    for i in range(9):
+        for j in range(9):
+            x, y = j * cell_size, i * cell_size
+            cell = warped[y:y+cell_size, x:x+cell_size]
+            cell = cv2.resize(cell, (128, 128))
+            cell = cv2.copyMakeBorder(cell, 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=0)
+            _, cell = cv2.threshold(cell, 128, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+
+            digit = pytesseract.image_to_string(
+                cell, config='--psm 10 --oem 3 -c tessedit_char_whitelist=123456789'
+            )
+            if digit.strip().isdigit():
+                grid[i][j] = int(digit.strip())
+
+    return grid
+
+def solve_sudoku(grid):
+    def find_empty():
+        for i in range(9):
+            for j in range(9):
+                if grid[i][j] == 0:
+                    return i, j
+        return None
+
+    def is_valid(row, col, num):
+        if num in grid[row]:
+            return False
+        if num in [grid[i][col] for i in range(9)]:
+            return False
+        box_start = 3 * (row // 3), 3 * (col // 3)
+        for i in range(box_start[0], box_start[0]+3):
+            for j in range(box_start[1], box_start[1]+3):
+                if grid[i][j] == num:
+                    return False
+        return True
+
+    empty = find_empty()
+    if not empty:
+        return True
+
+    row, col = empty
+    for num in range(1, 10):
+        if is_valid(row, col, num):
+            grid[row][col] = num
+            if solve_sudoku(grid):
+                return True
+            grid[row][col] = 0
+    return False
+
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    if request.method == 'POST':
+        if 'image' not in request.files:
+            return "No image uploaded", 400
+        image = request.files['image']
+        if image.filename == '':
+            return "No image selected", 400
+        
+        image_path = 'uploaded_sudoku.jpg'
+        image.save(image_path)
+        
+        try:
+            grid = process_image(image_path)
+            os.remove(image_path)
+            if not np.all(np.isin(grid, list(range(10)))):
+                raise ValueError("Invalid grid data extracted from image")
+            if solve_sudoku(grid):
+                return render_template_string(RESULT_HTML, grid=grid)
+            return "Could not solve the Sudoku puzzle", 500
+        except Exception as e:
+            return f"Error processing image: {str(e)}", 500
+    
+    return render_template_string(UPLOAD_HTML)
+
+if __name__ == '__main__':
+    app.run(debug=True)
